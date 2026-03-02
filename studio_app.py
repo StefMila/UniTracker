@@ -4,9 +4,11 @@ import pandas as pd
 from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
+import bcrypt
+import hashlib
 
 # Configurazione pagina
-st.set_page_config(page_title="Gestione Studio", layout="wide")
+st.set_page_config(page_title="Studio Tracker", layout="wide")
 
 # Connessione al database DBeaver (SQLite)
 @st.cache_resource
@@ -16,6 +18,17 @@ def init_connection():
 def create_tables(conn):
     """Crea le tabelle necessarie se non esistono"""
     cursor = conn.cursor()
+    
+    # Tabella utenti
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS utenti (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            email TEXT NOT NULL UNIQUE,
+            password TEXT NOT NULL,
+            data_registrazione TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
     # Tabella semestri
     cursor.execute('''
@@ -194,12 +207,135 @@ def crea_progetto_materia(conn, materia_id):
         return cursor.lastrowid
     return None
 
+# ========== FUNZIONI AUTENTICAZIONE ==========
+def hash_password(password):
+    """Cripta la password"""
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+def verify_password(password, hashed):
+    """Verifica la password"""
+    try:
+        return bcrypt.checkpw(password.encode(), hashed.encode())
+    except:
+        return False
+
+def register_user(conn, username, email, password):
+    """Registra un nuovo utente"""
+    try:
+        cursor = conn.cursor()
+        hashed_password = hash_password(password)
+        cursor.execute(
+            "INSERT INTO utenti (username, email, password) VALUES (?, ?, ?)",
+            (username, email, hashed_password)
+        )
+        conn.commit()
+        return True, "Registrazione completata! Accedi con le tue credenziali."
+    except sqlite3.IntegrityError as e:
+        if "username" in str(e):
+            return False, "Username già utilizzato!"
+        else:
+            return False, "Email già registrata!"
+    except Exception as e:
+        return False, f"Errore: {str(e)}"
+
+def login_user(conn, username, password):
+    """Verifica le credenziali e login"""
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, password FROM utenti WHERE username = ?", (username,))
+        result = cursor.fetchone()
+        
+        if result and verify_password(password, result[1]):
+            return True, result[0]  # True, user_id
+        else:
+            return False, None  # False, error message
+    except:
+        return False, None
+
+def show_login_page():
+    """Pagina di login e registrazione"""
+    st.set_page_config(page_title="Studio Tracker - Login", layout="centered")
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("# 🎓 Studio Tracker")
+        st.markdown("---")
+        
+        tab1, tab2 = st.tabs(["🔓 Accedi", "📝 Registrati"])
+        
+        conn = init_connection()
+        create_tables(conn)
+        
+        with tab1:
+            st.markdown("### Accedi al tuo account")
+            username = st.text_input("Username", key="login_username")
+            password = st.text_input("Password", type="password", key="login_password")
+            
+            if st.button("Accedi", key="login_btn"):
+                if username and password:
+                    success, user_id = login_user(conn, username, password)
+                    if success:
+                        st.session_state.user_id = user_id
+                        st.session_state.username = username
+                        st.session_state.logged_in = True
+                        st.success("Login riuscito! Caricamento app...")
+                        st.rerun()
+                    else:
+                        st.error("Username o password non corretti!")
+                else:
+                    st.warning("Compila tutti i campi!")
+        
+        with tab2:
+            st.markdown("### Crea un nuovo account")
+            new_username = st.text_input("Username", key="reg_username")
+            new_email = st.text_input("Email", key="reg_email")
+            new_password = st.text_input("Password", type="password", key="reg_password")
+            confirm_password = st.text_input("Conferma Password", type="password", key="reg_confirm")
+            
+            if st.button("Registrati", key="register_btn"):
+                if not all([new_username, new_email, new_password, confirm_password]):
+                    st.warning("Compila tutti i campi!")
+                elif new_password != confirm_password:
+                    st.error("Le password non coincidono!")
+                elif len(new_password) < 6:
+                    st.error("La password deve essere almeno 6 caratteri!")
+                elif "@" not in new_email:
+                    st.error("Email non valida!")
+                else:
+                    success, message = register_user(conn, new_username, new_email, new_password)
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
+
+# Inizializzazione sessione
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.user_id = None
+    st.session_state.username = None
+
+# Verifica login
+if not st.session_state.logged_in:
+    show_login_page()
+    st.stop()
+
+# ========== APP PRINCIPALE ==========
 # Inizializzazione
 conn = init_connection()
 create_tables(conn)
 
 # ========== SIDEBAR ==========
 st.sidebar.title("🎓 Studio Tracker")
+st.sidebar.markdown(f"**Utente:** {st.session_state.username}")
+
+# Logout button
+if st.sidebar.button("🚪 Logout", key="logout_btn"):
+    st.session_state.logged_in = False
+    st.session_state.user_id = None
+    st.session_state.username = None
+    st.rerun()
+
+st.sidebar.markdown("---")
 
 # Carica semestri
 semestri_df = get_semestri(conn)
